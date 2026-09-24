@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Afinador Digital</title>
+  <!-- Permite comportamento de app nativo no iOS -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #121212;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 10px; color: #aaa; }
+    .note-display {
+      font-size: 5rem;
+      font-weight: bold;
+      margin: 20px 0 5px 0;
+      color: #00e676;
+    }
+    .freq-display { font-size: 1.2rem; color: #888; margin-bottom: 20px; }
+    .status { font-size: 1.1rem; height: 30px; font-weight: 500; }
+    .cents-container {
+      width: 80%;
+      max-width: 300px;
+      height: 10px;
+      background-color: #333;
+      border-radius: 5px;
+      position: relative;
+      margin: 20px 0;
+      overflow: hidden;
+    }
+    .cents-pointer {
+      width: 6px;
+      height: 100%;
+      background-color: #00e676;
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      transition: left 0.1s ease;
+    }
+    .selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    button {
+      background-color: #2e2e2e;
+      color: #fff;
+      border: 1px solid #444;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button.active {
+      background-color: #00e676;
+      color: #121212;
+      border-color: #00e676;
+      font-weight: bold;
+    }
+    .start-btn {
+      background-color: #00e676;
+      color: #121212;
+      font-weight: bold;
+      padding: 15px 30px;
+      border-radius: 30px;
+      border: none;
+      font-size: 1.2rem;
+      margin-top: 10px;
+    }
+    .guide {
+      margin-top: 25px;
+      font-size: 0.85rem;
+      color: #666;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Afinador Digital</h1>
+
+  <div class="selector">
+    <button id="btn-violao" class="active" onclick="setInstrument('violao')">Violão (E2 A2 D3 G3 B3 E4)</button>
+    <button id="btn-ukulele" onclick="setInstrument('ukulele')">Ukulele (G4 C4 E4 A4)</button>
+  </div>
+
+  <button id="start-btn" class="start-btn" onclick="initTuner()">Ligar Afinador</button>
+
+  <div class="note-display" id="note">-</div>
+  <div class="freq-display" id="freq">0 Hz</div>
+
+  <div class="cents-container">
+    <div class="cents-pointer" id="pointer"></div>
+  </div>
+
+  <div class="status" id="status">Pressione 'Ligar Afinador'</div>
+
+  <div class="guide" id="guide">
+    Padrão Violão: E2 (82.4Hz), A2 (110Hz), D3 (146.8Hz), G3 (196Hz), B3 (246.9Hz), E4 (329.6Hz)
+  </div>
+
+  <script>
+    let audioCtx, analyser, dataArray;
+    let isRunning = false;
+
+    const notes = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    
+    function setInstrument(type) {
+      document.getElementById('btn-violao').classList.toggle('active', type === 'violao');
+      document.getElementById('btn-ukulele').classList.toggle('active', type === 'ukulele');
+      const guide = document.getElementById('guide');
+      if (type === 'violao') {
+        guide.innerText = "Padrão Violão: E2 (82.4Hz), A2 (110Hz), D3 (146.8Hz), G3 (196Hz), B3 (246.9Hz), E4 (329.6Hz)";
+      } else {
+        guide.innerText = "Padrão Ukulele: G4 (392Hz), C4 (261.6Hz), E4 (329.6Hz), A4 (440Hz)";
+      }
+    }
+
+    async function initTuner() {
+      if (isRunning) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        dataArray = new Float32Array(analyser.fftSize);
+        isRunning = true;
+        document.getElementById('start-btn').style.display = 'none';
+        document.getElementById('status').innerText = "Ouvindo...";
+        updateTuner();
+      } catch (err) {
+        alert("Permissão de microfone negada ou não suportada: " + err.message);
+      }
+    }
+
+    // Algoritmo de Autocorrelação para detecção de frequência (Pitch Detection)
+    function autoCorrelate(buf, sampleRate) {
+      let SIZE = buf.length;
+      let rms = 0;
+
+      for (let i = 0; i < SIZE; i++) {
+        let val = buf[i];
+        rms += val * val;
+      }
+      rms = Math.sqrt(rms / SIZE);
+      if (rms < 0.01) return -1; // Som muito baixo
+
+      let r1 = 0, r2 = SIZE - 1, thres = 0.2;
+      for (let i = 0; i < SIZE / 2; i++) {
+        if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+      }
+      for (let i = 1; i < SIZE / 2; i++) {
+        if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+      }
+
+      buf = buf.slice(r1, r2);
+      SIZE = buf.length;
+
+      let c = new Array(SIZE).fill(0);
+      for (let i = 0; i < SIZE; i++) {
+        for (let j = 0; j < SIZE - i; j++) {
+          c[i] = c[i] + buf[j] * buf[j + i];
+        }
+      }
+
+      let d = 0;
+      while (c[d] > c[d + 1]) d++;
+      let maxval = -1, maxpos = -1;
+      for (let i = d; i < SIZE; i++) {
+        if (c[i] > maxval) {
+          maxval = c[i];
+          maxpos = i;
+        }
+      }
+      let T0 = maxpos;
+
+      return sampleRate / T0;
+    }
+
+    function updateTuner() {
+      analyser.getFloatTimeDomainData(dataArray);
+      let pitch = autoCorrelate(dataArray, audioCtx.sampleRate);
+
+      if (pitch !== -1 && pitch > 60 && pitch < 1000) { // Filtra frequências fora do alcance dos instrumentos
+        let noteNum = 12 * (Math.log(pitch / 440) / Math.log(2)) + 69;
+        let midiNote = Math.round(noteNum);
+        let noteName = notes[midiNote % 12];
+        let octave = Math.floor(midiNote / 12) - 1;
+        
+        let targetFreq = 440 * Math.pow(2, (midiNote - 69) / 12);
+        let cents = Math.floor(1200 * Math.log2(pitch / targetFreq));
+
+        document.getElementById('note').innerText = noteName + octave;
+        document.getElementById('freq').innerText = pitch.toFixed(1) + " Hz";
+
+        // Ajusta ponteiro visual (-50 cents a +50 cents)
+        let clampedCents = Math.max(-50, Math.min(50, cents));
+        let leftPercentage = 50 + clampedCents;
+        document.getElementById('pointer').style.left = leftPercentage + "%";
+
+        const statusEl = document.getElementById('status');
+        if (Math.abs(cents) <= 3) {
+          statusEl.innerText = "Afinado!";
+          statusEl.style.color = "#00e676";
+        } else if (cents < 0) {
+          statusEl.innerText = "Abaixo (Aperte a corda)";
+          statusEl.style.color = "#ff9800";
+        } else {
+          statusEl.innerText = "Acima (Afrouxe a corda)";
+          statusEl.style.color = "#ff9800";
+        }
+      }
+
+      requestAnimationFrame(updateTuner);
+    }
+  </script>
+</body>
+</html>
